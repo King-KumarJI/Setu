@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+*.log
+build/
+dist/
+*.spec.bak
+Claude outputs/
+db_password_tool_docs.zip
