@@ -1,6 +1,6 @@
 # Setu — DB Password Reset Tool
 
-[![Build](https://github.com/OWNER/setu/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/setu/actions/workflows/build.yml)
+[![Build](https://github.com/King-KumarJI/Setu/actions/workflows/build.yml/badge.svg)](https://github.com/King-KumarJI/Setu/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Windows-first desktop utility that detects locally installed database
@@ -26,7 +26,7 @@ configuration file).
 ## Download
 
 Grab the latest portable `Setu.exe` from the
-[Releases page](https://github.com/OWNER/setu/releases/latest) — no
+[Releases page](https://github.com/King-KumarJI/Setu/releases/latest) — no
 installer, just download and run. Each release also publishes a
 `Setu.exe.sha256` checksum file so you can verify the download before
 running an admin-elevated tool:
