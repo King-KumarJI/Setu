@@ -32,15 +32,19 @@ def _assert_owner_only_permissions(path):
 
 
 class _FakeServiceManager:
-    def __init__(self, initial_state="RUNNING"):
+    def __init__(self, initial_state="RUNNING", binary_path=None):
         self.state = initial_state
         self.stop_calls = []
         self.start_calls = []
         self.stop_should_succeed = True
         self.start_should_succeed = True
+        self.binary_path = binary_path
 
     def get_service_state(self, name):
         return self.state
+
+    def get_service_binary_path(self, name):
+        return self.binary_path
 
     def stop_service(self, name, timeout=30):
         self.stop_calls.append(name)
@@ -83,6 +87,57 @@ def test_resolve_datadir_returns_none_when_path_missing(tmp_path):
     assert adapter._resolve_datadir(mariadbd) is None
 
 
+def test_resolve_datadir_prefers_service_defaults_file_over_compiled_default(tmp_path):
+    """Same regression as MySQLAdapter's equivalent test: mariadbd
+    invoked bare can report a compiled-in default datadir that the
+    actual Windows service was never configured to use -- the real
+    one only shows up once mariadbd is pointed at the same
+    --defaults-file the service was registered with."""
+    real_datadir = tmp_path / "configured" / "data"
+    real_datadir.mkdir(parents=True)
+    fake_ini = tmp_path / "configured" / "my.ini"
+    fake_ini.write_text("[mysqld]\n")
+
+    missing_datadir = tmp_path / "compiled-default" / "data"
+    bare_output = "mariadbd  Ver 11.2.2\ndatadir   " + str(missing_datadir)
+    with_defaults_output = "mariadbd  Ver 11.2.2\ndatadir   " + str(real_datadir)
+
+    mariadbd = tmp_path / ("mariadbd.bat" if sys.platform == "win32" else "mariadbd")
+    if sys.platform == "win32":
+        script = (
+            "@echo off\r\n"
+            "echo %1 | findstr /C:\"--defaults-file\" >nul\r\n"
+            "if %errorlevel%==0 (\r\n"
+            "  echo " + with_defaults_output.replace("\n", "\r\necho ") + "\r\n"
+            ") else (\r\n"
+            "  echo " + bare_output.replace("\n", "\r\necho ") + "\r\n"
+            ")\r\n"
+        )
+        mariadbd.write_text(script)
+    else:
+        script = (
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  --defaults-file=*)\n"
+            "    printf '%s\\n' \"" + with_defaults_output + "\"\n"
+            "    ;;\n"
+            "  *)\n"
+            "    printf '%s\\n' \"" + bare_output + "\"\n"
+            "    ;;\n"
+            "esac\n"
+        )
+        mariadbd.write_text(script)
+        mariadbd.chmod(mariadbd.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    fake_service = _FakeServiceManager(
+        binary_path='"' + str(mariadbd) + '" --defaults-file="' + str(fake_ini) + '" MariaDB'
+    )
+    adapter = MariaDBAdapter(service_manager=fake_service)
+
+    assert adapter._resolve_datadir(mariadbd, "MariaDB") == real_datadir
+    assert adapter._resolve_datadir(mariadbd, None) is None
+
+
 def test_write_init_file_contains_escaped_alter_user_statement():
     path = MariaDBAdapter._write_init_file("it's a secret")
     try:
@@ -116,7 +171,7 @@ def test_change_password_refuses_client_only_installation():
 
 def test_change_password_refuses_when_datadir_unresolved(monkeypatch):
     adapter = MariaDBAdapter()
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd: None)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd, service_name=None: None)
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
     assert not result.success
     assert "data directory" in result.message
@@ -127,7 +182,7 @@ def test_change_password_stops_and_restarts_service_around_successful_reset(
 ):
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     adapter = MariaDBAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd, service_name=None: tmp_path)
     monkeypatch.setattr(adapter, "_apply_new_password", lambda mariadbd, datadir, pw: True)
 
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
@@ -141,7 +196,7 @@ def test_change_password_stops_and_restarts_service_around_successful_reset(
 def test_change_password_restores_service_even_when_reset_fails(monkeypatch, tmp_path):
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     adapter = MariaDBAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mariadbd, service_name=None: tmp_path)
     monkeypatch.setattr(adapter, "_apply_new_password", lambda mariadbd, datadir, pw: False)
 
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")

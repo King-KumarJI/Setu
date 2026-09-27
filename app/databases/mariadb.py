@@ -46,6 +46,7 @@ from app.utils.logging import get_logger, register_secret
 logger = get_logger(__name__)
 
 _DATADIR_PATTERN = re.compile(r"^datadir\s+(.*\S)\s*$", re.MULTILINE)
+_DEFAULTS_FILE_ARG_PATTERN = re.compile(r'--defaults-file=(?:"([^"]+)"|(\S+))')
 _READY_MARKER = "ready for connections"
 _STARTUP_TIMEOUT = 30
 _POLL_INTERVAL = 0.5
@@ -89,7 +90,7 @@ class MariaDBAdapter(DatabaseAdapter):
             )
 
         mariadbd = Path(installation.executable_path)
-        datadir = self._resolve_datadir(mariadbd)
+        datadir = self._resolve_datadir(mariadbd, installation.service_name)
         if datadir is None:
             return OperationResult(
                 False, False,
@@ -166,9 +167,28 @@ class MariaDBAdapter(DatabaseAdapter):
     # ------------------------------------------------------------------
     # Discovery helpers
     # ------------------------------------------------------------------
-    def _resolve_datadir(self, mariadbd: Path) -> Path | None:
+    def _resolve_datadir(self, mariadbd: Path, service_name: str | None = None) -> Path | None:
+        """Same rationale and mechanism as MySQLAdapter._resolve_datadir:
+        invoked bare, mariadbd reports its compiled-in default datadir,
+        which may not match where the Windows service was actually
+        configured to store data. When a service name is known, look
+        up the same --defaults-file the service was registered with
+        (via `sc qc`) and pass it through first on the command line --
+        MySQL/MariaDB both require --defaults-file to be the first
+        argument or it's rejected. Falls back to the bare invocation
+        when there's no service, or no --defaults-file in its command
+        line (e.g. a manual/portable install)."""
+        args = [str(mariadbd)]
+        if service_name:
+            binary_path = self.service_manager.get_service_binary_path(service_name)
+            if binary_path:
+                match = _DEFAULTS_FILE_ARG_PATTERN.search(binary_path)
+                if match:
+                    defaults_file = match.group(1) or match.group(2)
+                    args.append(f"--defaults-file={defaults_file}")
+        args += ["--verbose", "--help"]
         try:
-            result = process.run([str(mariadbd), "--verbose", "--help"], timeout=10)
+            result = process.run(args, timeout=10)
         except Exception as exc:
             logger.warning("Could not query mariadbd defaults: %s", type(exc).__name__)
             return None

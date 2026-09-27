@@ -44,6 +44,7 @@ from app.utils.logging import get_logger, register_secret
 logger = get_logger(__name__)
 
 _DATADIR_PATTERN = re.compile(r"^datadir\s+(.*\S)\s*$", re.MULTILINE)
+_DEFAULTS_FILE_ARG_PATTERN = re.compile(r'--defaults-file=(?:"([^"]+)"|(\S+))')
 _READY_MARKER = "ready for connections"
 _STARTUP_TIMEOUT = 30
 _POLL_INTERVAL = 0.5
@@ -94,7 +95,7 @@ class MySQLAdapter(DatabaseAdapter):
             )
 
         mysqld = Path(installation.executable_path)
-        datadir = self._resolve_datadir(mysqld)
+        datadir = self._resolve_datadir(mysqld, installation.service_name)
         if datadir is None:
             return OperationResult(
                 False, False,
@@ -173,12 +174,40 @@ class MySQLAdapter(DatabaseAdapter):
     # ------------------------------------------------------------------
     # Discovery helpers
     # ------------------------------------------------------------------
-    def _resolve_datadir(self, mysqld: Path) -> Path | None:
+    def _resolve_datadir(self, mysqld: Path, service_name: str | None = None) -> Path | None:
         """Ask mysqld for its default datadir via --verbose --help -- a
         documented, standard mysqld behavior (Rule 6/9) -- rather than
-        guessing a path."""
+        guessing a path.
+
+        Invoked bare, mysqld reports its *compiled-in* default datadir,
+        which is very often not where the server actually stores its
+        data: MySQL's official Windows installer registers the service
+        with an explicit --defaults-file pointing at a my.ini under
+        ProgramData, and that file (not the compiled default under
+        Program Files) is what sets the real datadir. Verified against
+        a real MySQL 8.0 Windows install (Rule 9) -- the compiled
+        default reported without --defaults-file does not exist on
+        disk there at all. So when a service name is known, look up
+        the same --defaults-file the Windows service itself was
+        registered with (mirroring how PostgreSQLAdapter recovers its
+        datadir from the service's own -D argument) and pass it
+        through as --defaults-file -- placed first in the argument
+        list, since MySQL requires --defaults-file to be the first
+        option on the command line or it's rejected outright. Falls
+        back to the bare (compiled-default) invocation when there's no
+        service name, no registered service, or no --defaults-file in
+        its command line -- e.g. a manual/portable install."""
+        args = [str(mysqld)]
+        if service_name:
+            binary_path = self.service_manager.get_service_binary_path(service_name)
+            if binary_path:
+                match = _DEFAULTS_FILE_ARG_PATTERN.search(binary_path)
+                if match:
+                    defaults_file = match.group(1) or match.group(2)
+                    args.append(f"--defaults-file={defaults_file}")
+        args += ["--verbose", "--help"]
         try:
-            result = process.run([str(mysqld), "--verbose", "--help"], timeout=10)
+            result = process.run(args, timeout=10)
         except Exception as exc:
             logger.warning("Could not query mysqld defaults: %s", type(exc).__name__)
             return None

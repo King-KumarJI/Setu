@@ -6,6 +6,9 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- MySQL/MariaDB: `_resolve_datadir` now checks the Windows service's registered `--defaults-file` (via `sc qc`) before trusting mysqld/mariadbd's bare, compiled-in default datadir. Found against a real MySQL 8.0 Windows install: the official installer registers the service with `--defaults-file="C:\ProgramData\MySQL\...\my.ini"`, and the compiled default mysqld reports without that flag (`C:\Program Files\MySQL\...\data\`) does not exist on disk -- every standard MySQL Windows install would have hit "Couldn't determine MySQL's data directory" before this fix.
+
 ### Added
 - Packaging: `packaging/build.ps1` and `packaging/setu.spec` produce a
   single portable `Setu.exe` via PyInstaller.

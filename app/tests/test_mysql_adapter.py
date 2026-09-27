@@ -41,15 +41,19 @@ def _assert_owner_only_permissions(path):
 
 
 class _FakeServiceManager:
-    def __init__(self, initial_state="RUNNING"):
+    def __init__(self, initial_state="RUNNING", binary_path=None):
         self.state = initial_state
         self.stop_calls = []
         self.start_calls = []
         self.stop_should_succeed = True
         self.start_should_succeed = True
+        self.binary_path = binary_path
 
     def get_service_state(self, name):
         return self.state
+
+    def get_service_binary_path(self, name):
+        return self.binary_path
 
     def stop_service(self, name, timeout=30):
         self.stop_calls.append(name)
@@ -100,6 +104,64 @@ def test_resolve_datadir_returns_none_when_path_does_not_exist(tmp_path):
 def test_resolve_datadir_returns_none_when_executable_fails(tmp_path):
     adapter = MySQLAdapter()
     assert adapter._resolve_datadir(tmp_path / "does-not-exist") is None
+
+
+def test_resolve_datadir_prefers_service_defaults_file_over_compiled_default(tmp_path):
+    """Regression test for a real bug found against an actual MySQL 8.0
+    Windows install (Rule 9): mysqld invoked bare reports a compiled-in
+    default datadir under Program Files that the official Windows
+    installer never actually creates -- the real datadir only shows up
+    once mysqld is pointed at the same --defaults-file the Windows
+    service itself was registered with. Simulates that shape: the
+    bare-invocation output claims a datadir that doesn't exist, while
+    invoking with --defaults-file reports the real, existing one."""
+    real_datadir = tmp_path / "programdata" / "data"
+    real_datadir.mkdir(parents=True)
+    fake_ini = tmp_path / "programdata" / "my.ini"
+    fake_ini.write_text("[mysqld]\n")
+
+    missing_datadir = tmp_path / "program-files" / "data"
+    bare_output = "mysqld  Ver 8.0.35\ndatadir   " + str(missing_datadir)
+    with_defaults_output = "mysqld  Ver 8.0.35\ndatadir   " + str(real_datadir)
+
+    mysqld = tmp_path / ("mysqld.bat" if sys.platform == "win32" else "mysqld")
+    if sys.platform == "win32":
+        # A bare invocation (no --defaults-file argument) prints the
+        # compiled default; any invocation carrying --defaults-file
+        # prints the real, ini-resolved one.
+        script = (
+            "@echo off\r\n"
+            "echo %1 | findstr /C:\"--defaults-file\" >nul\r\n"
+            "if %errorlevel%==0 (\r\n"
+            "  echo " + with_defaults_output.replace("\n", "\r\necho ") + "\r\n"
+            ") else (\r\n"
+            "  echo " + bare_output.replace("\n", "\r\necho ") + "\r\n"
+            ")\r\n"
+        )
+        mysqld.write_text(script)
+    else:
+        script = (
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  --defaults-file=*)\n"
+            "    printf '%s\\n' \"" + with_defaults_output + "\"\n"
+            "    ;;\n"
+            "  *)\n"
+            "    printf '%s\\n' \"" + bare_output + "\"\n"
+            "    ;;\n"
+            "esac\n"
+        )
+        mysqld.write_text(script)
+        mysqld.chmod(mysqld.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    fake_service = _FakeServiceManager(
+        binary_path='"' + str(mysqld) + '" --defaults-file="' + str(fake_ini) + '" MySQL80'
+    )
+    adapter = MySQLAdapter(service_manager=fake_service)
+
+    assert adapter._resolve_datadir(mysqld, "MySQL80") == real_datadir
+    # And without a service name, falls back to the (here, non-existent) compiled default.
+    assert adapter._resolve_datadir(mysqld, None) is None
 
 
 def test_locate_sibling_finds_matching_extension(tmp_path):
@@ -179,7 +241,7 @@ def test_change_password_refuses_when_no_executable_path():
 
 def test_change_password_refuses_when_datadir_unresolved(monkeypatch):
     adapter = MySQLAdapter()
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld: None)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld, service_name=None: None)
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
     assert not result.success
     assert "data directory" in result.message
@@ -190,7 +252,7 @@ def test_change_password_stops_and_restarts_service_around_successful_reset(
 ):
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     adapter = MySQLAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld, service_name=None: tmp_path)
     monkeypatch.setattr(adapter, "_apply_new_password", lambda mysqld, datadir, pw: True)
 
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
@@ -204,7 +266,7 @@ def test_change_password_stops_and_restarts_service_around_successful_reset(
 def test_change_password_restores_service_even_when_reset_fails(monkeypatch, tmp_path):
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     adapter = MySQLAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld, service_name=None: tmp_path)
     monkeypatch.setattr(adapter, "_apply_new_password", lambda mysqld, datadir, pw: False)
 
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
@@ -218,7 +280,7 @@ def test_change_password_aborts_cleanly_if_service_will_not_stop(monkeypatch, tm
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     fake_service.stop_should_succeed = False
     adapter = MySQLAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld, service_name=None: tmp_path)
     called = {"apply": False}
 
     def _mark_called(*args, **kwargs):
@@ -237,7 +299,7 @@ def test_change_password_reports_when_restart_fails(monkeypatch, tmp_path):
     fake_service = _FakeServiceManager(initial_state="RUNNING")
     fake_service.start_should_succeed = False
     adapter = MySQLAdapter(service_manager=fake_service)
-    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld: tmp_path)
+    monkeypatch.setattr(adapter, "_resolve_datadir", lambda mysqld, service_name=None: tmp_path)
     monkeypatch.setattr(adapter, "_apply_new_password", lambda mysqld, datadir, pw: True)
 
     result = adapter.change_password(RUNNING_INSTALLATION, "newpass123")
