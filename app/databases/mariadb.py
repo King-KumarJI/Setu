@@ -219,6 +219,20 @@ class MariaDBAdapter(DatabaseAdapter):
                     f"--datadir={datadir}",
                     f"--init-file={init_file}",
                     "--skip-networking",
+                    # On Windows, mariadbd writes its startup log (including
+                    # the "ready for connections" line _wait_for_ready_or_exit
+                    # watches for) to a file in the datadir instead of to
+                    # stderr, unless told otherwise -- a real, documented
+                    # Windows-specific behavior (Rule 9), not a hypothetical
+                    # one: verified against a real Windows install, where the
+                    # password change silently succeeded (confirmed via a
+                    # separate client) while Setu still reported failure,
+                    # because it never saw the marker on the pipe it was
+                    # reading. --console redirects that output to the
+                    # console/stderr instead; it's a no-op on non-Windows
+                    # platforms where the server already logs to stderr by
+                    # default.
+                    "--console",
                 ]
             )
         except Exception as exc:

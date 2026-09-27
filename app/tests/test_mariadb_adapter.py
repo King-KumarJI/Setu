@@ -161,6 +161,32 @@ def test_locate_sibling_finds_matching_extension(tmp_path):
     assert adapter._locate_sibling(installation, "mariadb-admin") == admin
 
 
+def test_apply_new_password_passes_console_flag(tmp_path, monkeypatch):
+    """Same regression as MySQLAdapter's equivalent test -- mariadbd has
+    the same Windows-only log-to-file-instead-of-stderr behavior."""
+    import app.databases.mariadb as mariadb_module
+
+    captured = {}
+
+    class _FakeProc:
+        stderr = None
+
+        def poll(self):
+            return 0
+
+    def _fake_start(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(mariadb_module.process, "start", _fake_start)
+    adapter = MariaDBAdapter()
+    monkeypatch.setattr(adapter, "_wait_for_ready_or_exit", lambda proc, timeout: True)
+
+    adapter._apply_new_password(tmp_path / "mariadbd", tmp_path, "newpass123")
+
+    assert "--console" in captured["args"]
+
+
 def test_change_password_refuses_client_only_installation():
     adapter = MariaDBAdapter()
     installation = Installation(dbms=DBMS.MARIADB, status=DetectionStatus.EXECUTABLE_FOUND)

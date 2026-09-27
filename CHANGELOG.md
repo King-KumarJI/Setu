@@ -7,6 +7,7 @@ project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- MySQL/MariaDB: password resets that actually succeeded were reported as failed. Found against a real MySQL 8.0 Windows install: on Windows, mysqld/mariadbd only write their "ready for connections" startup line to a log file in the datadir, not to stderr, unless started with `--console` -- so Setu's readiness check (which only watches stderr) timed out even after the `--init-file` password change had already applied cleanly. Now passes `--console` when starting the standalone reset instance.
 - MySQL/MariaDB: `_resolve_datadir` now checks the Windows service's registered `--defaults-file` (via `sc qc`) before trusting mysqld/mariadbd's bare, compiled-in default datadir. Found against a real MySQL 8.0 Windows install: the official installer registers the service with `--defaults-file="C:\ProgramData\MySQL\...\my.ini"`, and the compiled default mysqld reports without that flag (`C:\Program Files\MySQL\...\data\`) does not exist on disk -- every standard MySQL Windows install would have hit "Couldn't determine MySQL's data directory" before this fix.
 
 ### Added

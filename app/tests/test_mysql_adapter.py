@@ -231,6 +231,38 @@ def test_change_password_refuses_client_only_installation():
     assert "client was detected" in result.message
 
 
+def test_apply_new_password_passes_console_flag(tmp_path, monkeypatch):
+    """Regression test for a real bug found against an actual MySQL 8.0
+    Windows install: password reset silently succeeded (confirmed via
+    a separate client) but Setu still reported failure, because on
+    Windows mysqld only writes its "ready for connections" startup
+    message to a log file in the datadir -- not to stderr, which is
+    all _wait_for_ready_or_exit watches -- unless --console is passed.
+    This checks the flag reaches the constructed command line; the
+    actual ready-detection behavior needs a real mysqld to exercise."""
+    import app.databases.mysql as mysql_module
+
+    captured = {}
+
+    class _FakeProc:
+        stderr = None
+
+        def poll(self):
+            return 0
+
+    def _fake_start(args, **kwargs):
+        captured["args"] = args
+        return _FakeProc()
+
+    monkeypatch.setattr(mysql_module.process, "start", _fake_start)
+    adapter = MySQLAdapter()
+    monkeypatch.setattr(adapter, "_wait_for_ready_or_exit", lambda proc, timeout: True)
+
+    adapter._apply_new_password(tmp_path / "mysqld", tmp_path, "newpass123")
+
+    assert "--console" in captured["args"]
+
+
 def test_change_password_refuses_when_no_executable_path():
     adapter = MySQLAdapter()
     installation = Installation(dbms=DBMS.MYSQL, status=DetectionStatus.SERVER_RUNNING)
